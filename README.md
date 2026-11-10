@@ -22,9 +22,15 @@ docker build -t iiitbh-mess-webapp .
 docker run --rm -p 3000:3000 iiitbh-mess-webapp
 ```
 
-The container runs as a non-root user. It uses in-memory SQLite (`MESS_EPHEMERAL=1`) and temporary uploads. Restarting replaces all wallets, reservations, complaints, uploaded images and login sessions with fresh demo state. No persistent volume is required. Multiple runtime instances have independent data; this is a demonstration, not a production mess system. Do not submit personal information.
+The container runs as a non-root user. It uses in-memory SQLite (`MESS_EPHEMERAL=1`) and temporary uploads. Restarting replaces wallets, reservations, complaints and uploaded images with fresh demo state. No persistent volume is required. Multiple runtime instances have independent data; this is a demonstration, not a production mess system. Do not submit personal information. With `MESS_SESSION_SECRET` configured, the server signs an expiring HttpOnly login cookie that works across instances; logging out clears the browser cookie but does not revoke a copied cookie before its 12-hour expiry. Without that secret, local sessions are in memory and reset with the server.
 
-Vercel: use the Container framework preset, project root `Dockerfile`, and `PORT=3000`. The image already defines `MESS_EPHEMERAL=1` and `MESS_UPLOADS_DIR=/tmp/mess-uploads`. Configure Bun as the install command if using the alternative Node Functions adapter. No database, storage or payment token is required. Vercel credentials belong in its CLI credential store, never in this repository.
+Vercel: use the Container framework preset, project root `Dockerfile`, and `PORT=3000`. The image defines `MESS_EPHEMERAL=1` and `MESS_UPLOADS_DIR=/tmp/mess-uploads`. Configure a randomly generated `MESS_SESSION_SECRET` as a sensitive runtime variable shared across instances; do not commit it. No database, storage or payment-provider token is required. Vercel credentials belong in its CLI credential store, never in this repository.
+
+Live demo: https://iiitbh-mess-webapp.vercel.app
+
+Source: https://github.com/ujsquared/iiitbh-mess-webapp
+
+CLI deployments work independently of the Git integration. Automatic redeploys on pushes require granting the Vercel GitHub App access to this private repository.
 
 ## Demo accounts
 

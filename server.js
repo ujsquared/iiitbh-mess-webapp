@@ -21,7 +21,7 @@ const MENU=[
 ].map((d,i)=>({...d,photoBreakfast:`https://images.unsplash.com/${PHOTO_IDS[i]}?auto=format&fit=crop&w=300&q=75`,photoLunch:`https://images.unsplash.com/${PHOTO_IDS[(i+2)%7]}?auto=format&fit=crop&w=300&q=75`,photoDinner:`https://images.unsplash.com/${PHOTO_IDS[(i+4)%7]}?auto=format&fit=crop&w=300&q=75`}));
 const SNACKS=[{id:'samosa',name:'Samosa',detail:'2 pcs · mint chutney',price:20},{id:'bara',name:'Bara ghuguni',detail:'Crisp lentil fritter',price:25},{id:'chai',name:'Masala chai',detail:'Freshly brewed',price:10},{id:'dahibara',name:'Dahi bara aloo dum',detail:'Bhubaneswar classic',price:35}];
 function hashPassword(p,s){return crypto.scryptSync(p,s,64).toString('hex')}
-function createServer({dbPath=process.env.MESS_EPHEMERAL==='1'?':memory:':path.join(ROOT,'mess.sqlite'),testMode=false,uploadsDir=process.env.MESS_UPLOADS_DIR||path.join(ROOT,'uploads')}={}){
+function createServer({dbPath=process.env.MESS_EPHEMERAL==='1'?':memory:':path.join(ROOT,'mess.sqlite'),testMode=false,sessionSecret=process.env.MESS_SESSION_SECRET||'',uploadsDir=process.env.MESS_UPLOADS_DIR||path.join(ROOT,'uploads')}={}){
  const UPLOADS=uploadsDir,ephemeral=dbPath===':memory:';
  fs.mkdirSync(UPLOADS,{recursive:true});
  const db=new DatabaseSync(dbPath);db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
@@ -45,10 +45,10 @@ function createServer({dbPath=process.env.MESS_EPHEMERAL==='1'?':memory:':path.j
    if(!url.pathname.startsWith('/api/'))return serveStatic(req,res);
    if(testMode&&req.method==='POST'&&url.pathname==='/api/test/reset'){reset(db);sessions.clear();return send(res,200,{ok:true});}
    if(testMode&&req.method==='POST'&&url.pathname==='/api/test/set-balance'){const b=await readJSON(req),v=Number(b.amount);if(!Number.isInteger(v)||v<0||v>10000)return send(res,400,{error:'Invalid test balance.'});db.prepare("UPDATE users SET balance=? WHERE email='student@iiitbh.ac.in'").run(v);return send(res,200,{ok:true});}
-   if(req.method==='POST'&&url.pathname==='/api/login'){const b=await readJSON(req),u=db.prepare('SELECT * FROM users WHERE email=?').get(String(b.email||'').trim().toLowerCase());if(!u||!safeEqual(hashPassword(String(b.password||''),u.salt),u.password_hash))return send(res,401,{error:'Email or password is incorrect.'});const sid=crypto.randomBytes(32).toString('hex');sessions.set(sid,{id:u.id,expires:Date.now()+43200000});res.setHeader('Set-Cookie',`sid=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${process.env.NODE_ENV==='production'?'; Secure':''}`);return send(res,200,{user:publicUser(u)});}
+   if(req.method==='POST'&&url.pathname==='/api/login'){const b=await readJSON(req),u=db.prepare('SELECT * FROM users WHERE email=?').get(String(b.email||'').trim().toLowerCase());if(!u||!safeEqual(hashPassword(String(b.password||''),u.salt),u.password_hash))return send(res,401,{error:'Email or password is incorrect.'});const sid=sessionSecret?signSession(u.email,sessionSecret):crypto.randomBytes(32).toString('hex');if(!sessionSecret)sessions.set(sid,{id:u.id,expires:Date.now()+43200000});res.setHeader('Set-Cookie',`sid=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${process.env.NODE_ENV==='production'?'; Secure':''}`);return send(res,200,{user:publicUser(u)});}
    if(req.method==='POST'&&url.pathname==='/api/logout'){sessions.delete(getCookie(req,'sid'));res.setHeader('Set-Cookie','sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');return send(res,200,{ok:true});}
-   if(req.method==='GET'&&url.pathname==='/api/session'){const u=currentUser(req,db,sessions);return send(res,200,{user:u?publicUser(u):null});}
-   const user=currentUser(req,db,sessions);if(!user)return send(res,401,{error:'Sign in to continue.'});
+   if(req.method==='GET'&&url.pathname==='/api/session'){const u=currentUser(req,db,sessions,sessionSecret);return send(res,200,{user:u?publicUser(u):null});}
+   const user=currentUser(req,db,sessions,sessionSecret);if(!user)return send(res,401,{error:'Sign in to continue.'});
    const qrMatch=url.pathname.match(/^\/api\/student\/tokens\/([a-f0-9]+)\/qr$/);
    if(req.method==='GET'&&qrMatch){if(user.role!=='student')return send(res,403,{error:'Student access only.'});const token=db.prepare('SELECT id FROM meal_tokens WHERE id=? AND user_id=?').get(qrMatch[1],user.id);if(!token)return send(res,404,{error:'Token not found.'});const png=await require('qrcode').toBuffer(token.id,{type:'png',width:240,margin:1,color:{dark:'#242d28',light:'#ffffff'}});res.statusCode=200;res.setHeader('Content-Type','image/png');return res.end(png);}
    if(req.method==='GET'&&url.pathname==='/api/student/dashboard'){if(user.role!=='student')return send(res,403,{error:'Student access only.'});return send(res,200,{...studentDashboard(db,user),ephemeral});}
@@ -154,7 +154,16 @@ function readBuffer(req,max){return new Promise((resolve,reject)=>{const chunks=
 function addLedger(db,id,type,amount,description){db.prepare('INSERT INTO ledger(user_id,type,amount,description,created_at) VALUES(?,?,?,?,?)').run(id,type,amount,description,new Date().toISOString())}
 function getUser(db,id){return db.prepare('SELECT * FROM users WHERE id=?').get(id)}
 function publicUser(u){return{id:u.id,name:u.name,email:u.email,role:u.role,studentId:u.student_id}}
-function currentUser(req,db,sessions){const sid=getCookie(req,'sid'),s=sessions.get(sid);if(!s||s.expires<Date.now()){sessions.delete(sid);return null}return getUser(db,s.id)||null}
+function signSession(email,secret){const payload=Buffer.from(JSON.stringify({email,expires:Date.now()+43200000})).toString('base64url');const sig=crypto.createHmac('sha256',secret).update(payload).digest('base64url');return `s1.${payload}.${sig}`;}
+function currentUser(req,db,sessions,sessionSecret){
+ const sid=getCookie(req,'sid');
+ if(sessionSecret){
+  const parts=sid.split('.');if(parts.length!==3||parts[0]!=='s1')return null;
+  const expected=crypto.createHmac('sha256',sessionSecret).update(parts[1]).digest('base64url');if(!safeEqual(expected,parts[2]))return null;
+  try{const payload=JSON.parse(Buffer.from(parts[1],'base64url').toString());if(typeof payload.email!=='string'||!Number.isFinite(payload.expires)||payload.expires<=Date.now())return null;return db.prepare('SELECT * FROM users WHERE email=?').get(payload.email)||null;}catch{return null;}
+ }
+ const s=sessions.get(sid);if(!s||s.expires<Date.now()){sessions.delete(sid);return null;}return getUser(db,s.id)||null;
+}
 function getCookie(req,n){const m=(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(`${n}=`));return m?m.slice(n.length+1):''}
 function safeEqual(a,b){const aa=Buffer.from(a),bb=Buffer.from(b);return aa.length===bb.length&&crypto.timingSafeEqual(aa,bb)}
 function readJSON(req){return readBuffer(req,1e6).then(data=>{try{return data.length?JSON.parse(data):{}}catch{throw httpError(400,'Invalid JSON.')}})}
