@@ -1,0 +1,9 @@
+.git
+node_modules
+.vercel
+.env
+.env.*
+*.sqlite*
+*.db*
+uploads
+*.log
